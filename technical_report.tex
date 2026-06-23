@@ -1,0 +1,347 @@
+\documentclass[11pt,a4paper]{article}
+
+% ---------------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{longtable}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+
+% ---------------------------------------------------------------------------
+% Listings (code) style
+% ---------------------------------------------------------------------------
+\definecolor{codebg}{gray}{0.96}
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  framesep=4pt,
+  backgroundcolor=\color{codebg},
+  showstringspaces=false,
+  keepspaces=true,
+}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.6em}{}
+\setlist{itemsep=2pt,topsep=3pt}
+
+% ---------------------------------------------------------------------------
+% Title
+% ---------------------------------------------------------------------------
+\title{\textbf{Human Safety Monitoring System}\\[2pt]
+\large PPE Detection and Person Tracking --- Technical Report}
+\author{Arif Faishal}
+\date{23 June 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This report documents a computer-vision service for workplace human-safety
+monitoring. The system combines a fine-tuned YOLO model for Personal
+Protective Equipment (PPE) detection with a pretrained YOLOv11 model for
+person detection and multi-object tracking. It exposes a FastAPI HTTP
+interface offering single-frame detection (PPE or person) and full-video
+person tracking, where each tracked person is annotated with their PPE
+compliance state (helmet, vest, mask). Tracking-identity consistency is
+quantified through an ID Switch Rate metric, and throughput is reported as
+frames per second (FPS). The document covers the data, models, evaluation
+methodology, system architecture, the primary AI-assisted development steps,
+and current limitations.
+\end{abstract}
+
+% ===========================================================================
+\section{Data}
+% ===========================================================================
+
+\subsection{Inputs}
+The service operates on two media modalities supplied by the client at request
+time:
+\begin{itemize}
+  \item \textbf{Images} (JPEG / PNG) --- used by the single-frame detection
+        endpoint. Bytes are decoded to a BGR array with OpenCV
+        (\verb|cv2.imdecode|).
+  \item \textbf{Video} (MP4) --- used by the person-tracking endpoint. The
+        upload is buffered to a temporary file and read frame-by-frame with
+        \verb|cv2.VideoCapture|.
+\end{itemize}
+A representative operational sample, \verb|datas/hardhat.mp4|, is retained for
+local testing alongside generated artifacts under \verb|datas/detections/|.
+
+\subsection{PPE class taxonomy}
+The PPE model emits six mutually paired classes (a positive ``wearing'' class
+and its ``missing'' counterpart) that are mapped onto the application's
+\verb|SafetyLabel| enumeration. The class index ordering matches the project
+reference in \verb|scripts/tracker.py|.
+
+\begin{center}
+\begin{tabular}{cll}
+\toprule
+\textbf{Index} & \textbf{Model class} & \textbf{SafetyLabel} \\
+\midrule
+0 & Hard Hat       & \verb|hard_hat| \\
+1 & No Hard Hat    & \verb|no_hard_hat| \\
+2 & Mask           & \verb|mask| \\
+3 & No Mask        & \verb|no_mask| \\
+4 & Safety Vest    & \verb|safety_vest| \\
+5 & No Safety Vest & \verb|no_safety_vest| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The person model is class-agnostic with respect to PPE; only COCO class
+\verb|0| (\emph{person}) is requested at inference. Detected persons are mapped
+to the \verb|person| label.
+
+\subsection{Outputs}
+Two artifact families are persisted to the configured output directory
+(\verb|DETECTION_OUTPUT_DIR|, default \verb|datas/detections|):
+\begin{itemize}
+  \item \textbf{Detection}: an annotated image
+        (\verb|{type}_detection_{id}.{ext}|) plus a JSON response
+        (\verb|.json|) carrying every bounding box, label, and confidence.
+  \item \textbf{Tracking}: an annotated MP4 (\verb|track_person_{id}.mp4|) and a
+        per-frame JSON file (\verb|track_person_{id}.json|) containing tracked
+        persons, their PPE booleans, the ID Switch Rate, and the average FPS.
+\end{itemize}
+
+% ===========================================================================
+\section{Model}
+% ===========================================================================
+
+The system wraps two YOLO models through the Ultralytics runtime
+(\verb|ultralytics>=8.4.75|). Both are loaded once during application startup
+and shared as a single in-memory instance for all requests.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Role} & \textbf{Weights} & \textbf{Size} \\
+\midrule
+PPE detection            & \verb|models/yolo_50.pt|             & $\approx$161\,MB \\
+Person detection/tracker & \verb|models/yolo_person_tracker.pt| & $\approx$5.6\,MB \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{itemize}
+  \item \textbf{PPE model} (\verb|yolo_50.pt|): a YOLO detector fine-tuned on
+        the six-class PPE taxonomy above. Its larger footprint is consistent
+        with a medium/large backbone trained for the construction-safety
+        domain.
+  \item \textbf{Person model} (\verb|yolo_person_tracker.pt|): a pretrained
+        YOLOv11 model (nano-scale, given its size) used both for person
+        detection and as the tracking detector.
+\end{itemize}
+
+\subsection{Loading lifecycle}
+Model weights are loaded inside the FastAPI \verb|lifespan| context manager so
+that the cost is paid once at boot, never on the request path. A readiness
+guard (\verb|is_ready()|) requires \emph{both} models to be present before any
+endpoint will serve traffic; otherwise the API returns
+\verb|503 Service Unavailable|. The \verb|/ready| probe surfaces this state for
+orchestration.
+
+\subsection{Inference configuration}
+\begin{itemize}
+  \item \textbf{Confidence threshold}: a single configurable value
+        (\verb|PERSON_DETECTION_THRESHOLD|, default \verb|0.3|) gates both
+        detection and tracking, avoiding hard-coded thresholds.
+  \item \textbf{Tracking}: ByteTrack (\verb|bytetrack.yaml|) is used as the
+        association algorithm. Tracking is driven frame-by-frame with
+        \verb|persist=True| so each model maintains its own track state across
+        the video.
+\end{itemize}
+
+% ===========================================================================
+\section{Evaluation}
+% ===========================================================================
+
+Evaluation focuses on the two operational qualities that matter for a live
+monitoring service: \emph{tracking-identity stability} and \emph{throughput}.
+
+\subsection{Tracking-ID consistency --- ID Switch Rate}
+Identity stability is measured with an ID Switch Rate. A spatial cell is
+defined by quantising a bounding box to a 50\,px grid; whenever the track ID
+occupying a previously seen cell changes between observations, an identity
+switch is counted. The rate is
+\[
+\text{ID Switch Rate} \;=\; \frac{\#\,\text{ID switches}}{\#\,\text{frames}} \times 100\%.
+\]
+This is reported per tracking run in the JSON output, e.g.
+\verb|{"id_switches": 0, "total_frames": 25, "rate": "0.00%"}|. The method is a
+lightweight, ground-truth-free proxy for identity continuity (in the spirit of
+MOT identity metrics) rather than a formal IDF1/MOTA computation.
+
+\subsection{Throughput --- FPS}
+Per-frame processing latency is measured and converted to an instantaneous FPS
+value, which is overlaid on the top-left of every annotated frame. The average
+FPS over the clip is reported in the summary. In a CPU smoke test on
+$640\times360$ clips, the end-to-end pipeline (two YOLO models plus ByteTrack
+per frame) ran at roughly \textbf{9\,FPS}.
+
+\subsection{Functional verification}
+Each module was verified end-to-end via FastAPI's \verb|TestClient|:
+\begin{itemize}
+  \item Both models load on boot and \verb|/ready| reports ready.
+  \item \verb|/detect| returns \verb|200| for \verb|ppe| and \verb|person|, and
+        \verb|422| for an invalid \verb|detection_type|.
+  \item \verb|/track-person| returns \verb|200|; track IDs, per-person PPE
+        booleans, the ID Switch Rate, FPS, and both output files are produced
+        (17 person-detections across a 25-frame test segment).
+\end{itemize}
+
+\subsection{Not yet measured}
+No labelled ground truth is wired in, so detection quality
+(precision/recall/mAP) and formal tracking accuracy (MOTA/IDF1) are not
+reported. These require an annotated evaluation set and are noted in
+Limitations.
+
+% ===========================================================================
+\section{System Design}
+% ===========================================================================
+
+The application follows a layered FastAPI architecture with strict separation
+between HTTP concerns and model logic.
+
+\begin{lstlisting}
+app/
+  main.py                 # App factory + lifespan (loads both models on boot)
+  core/
+    config.py             # pydantic-settings (paths, thresholds, output dir)
+    logging.py            # Logging setup
+  api/
+    deps.py               # Shared singletons (get_detector, get_monitor)
+    v1/
+      router.py           # Aggregates all v1 routers
+      endpoints/
+        health.py         # /health, /ready
+        detections.py     # /detections (legacy single-frame)
+        monitoring.py     # /monitoring/evaluate, /monitoring/alerts
+        detect.py         # /detect  (detection_type: ppe | person)
+        track.py          # /track-person (video -> annotated video + JSON)
+  schemas/                # Pydantic DTOs (detection, monitoring, tracking)
+  services/
+    detector.py           # YOLO wrapper: load, detect, annotate, track_persons
+    safety_monitor.py     # Detections -> events -> alerts (framework-agnostic)
+  utils/
+    storage.py            # Persistence helpers (image/JSON/video artifacts)
+\end{lstlisting}
+
+\subsection{Layers}
+\begin{itemize}
+  \item \textbf{API layer} (\verb|api/v1/endpoints|): request validation,
+        status codes, and response models. No model code lives here.
+  \item \textbf{Service layer} (\verb|services/detector.py|): owns both models
+        privately and exposes a stable interface --- \verb|detect()|,
+        \verb|annotate()|, and \verb|track_persons()|. Free of FastAPI imports.
+  \item \textbf{Schema layer} (\verb|schemas/|): typed DTOs returned by every
+        endpoint (e.g.\ \verb|PersonDetectionResult|, \verb|PersonTrackingResult|,
+        \verb|TrackingData|).
+  \item \textbf{Utility layer} (\verb|utils/storage.py|): file-naming templates
+        and artifact persistence, decoupled from the request handlers.
+  \item \textbf{Core} (\verb|core/|): centralised configuration and logging.
+\end{itemize}
+
+\subsection{Person-tracking pipeline}
+For each frame of the uploaded video:
+\begin{enumerate}
+  \item Run the person model with ByteTrack (\verb|classes=[0]|, \verb|persist=True|)
+        to obtain tracked person boxes and IDs.
+  \item Run the PPE model with ByteTrack to obtain PPE class boxes.
+  \item Associate PPE to a person when a PPE box \emph{centre} falls inside the
+        person box, deriving the booleans \verb|helmet|, \verb|vest|, \verb|mask|.
+  \item Draw each person box with the meta label
+        \verb|ID{n} H:{0/1} V:{0/1} M:{0/1}| (green if fully compliant, red
+        otherwise) and overlay the current FPS.
+  \item Update the ID Switch Rate accumulator and append the frame record.
+\end{enumerate}
+The annotated frames are written to an MP4 (\verb|mp4v|), and the per-frame
+records plus summary metrics are serialised to JSON.
+
+\subsection{Request example}
+\begin{lstlisting}[language=bash]
+curl -X POST http://localhost:8000/api/v1/track-person \
+  -F "file=@datas/hardhat.mp4"
+\end{lstlisting}
+
+% ===========================================================================
+\section{AI Usage Log (Primary)}
+% ===========================================================================
+
+The system was built incrementally with AI assistance; every session is
+recorded in \verb|changelogs/agent-changelogs.md|. The five \emph{primary}
+feature-delivering steps are summarised below.
+
+\begin{longtable}{p{0.5cm} p{4.3cm} p{9.0cm}}
+\toprule
+\textbf{\#} & \textbf{Prompt (paraphrased)} & \textbf{Outcome} \\
+\midrule
+\endhead
+3 & Add a boot-time model loader for the PPE and person weights. &
+Added \verb|PPE_MODEL_PATH| / \verb|PERSON_MODEL_PATH| settings; loads both YOLO
+models in the lifespan; \verb|is_ready()| now requires both. \\
+\addlinespace
+4 & Add a \verb|detect-person| endpoint (image upload, threshold 0.3). &
+Implemented person detection (COCO class 0) returning
+\verb|PersonDetectionResult|; added \verb|PERSON_DETECTION_THRESHOLD| and
+\verb|DETECTION_OUTPUT_DIR|. \\
+\addlinespace
+5 & Add the PPE detection module and align labels to the class taxonomy. &
+Replaced placeholder labels with the six PPE classes; added the class-index
+mapping and the \verb|detect-ppe| path. \\
+\addlinespace
+6 & Unify the two endpoints and save annotated artifacts. &
+Merged into a single \verb|/detect| endpoint keyed by \verb|detection_type|;
+added OpenCV annotation and paired image\,+\,JSON persistence. \\
+\addlinespace
+8 & Build the person-tracking module. &
+Added ByteTrack person\,+\,PPE tracking, the ID Switch Rate, FPS overlay, and
+the \verb|/track-person| endpoint producing an annotated video and tracking
+JSON. \\
+\bottomrule
+\end{longtable}
+
+% ===========================================================================
+\section{Limitations}
+% ===========================================================================
+
+\begin{itemize}
+  \item \textbf{Synchronous video processing.} Tracking runs inline within the
+        HTTP request, holding the connection open for the duration of the
+        video. Long clips should be moved to a background job with a
+        poll/callback contract.
+  \item \textbf{CPU throughput.} At $\approx$9\,FPS on CPU for $640\times360$
+        input, the pipeline is not real-time; GPU execution or a smaller PPE
+        backbone would be needed for live streams.
+  \item \textbf{Approximate PPE--person association.} Attribution uses a simple
+        ``centre-in-box'' test, which can mis-assign PPE when people overlap
+        heavily. IoU-based or nearest-person matching would be more robust.
+  \item \textbf{Heuristic identity metric.} The ID Switch Rate uses a 50\,px
+        spatial-cell proxy, not a ground-truth alignment; it is indicative
+        rather than a formal MOTA/IDF1 score.
+  \item \textbf{No labelled evaluation.} Detection accuracy (precision, recall,
+        mAP) and tracking accuracy are not yet measured against annotated data.
+  \item \textbf{Conservative compliance semantics.} A PPE item is reported
+        \verb|true| only when its positive class is detected near the person;
+        missed detections are therefore treated as non-compliant, which can
+        inflate false ``violation'' signals.
+  \item \textbf{Independent trackers.} The person and PPE models maintain
+        separate ByteTrack states, so PPE identities are not themselves linked
+        to a person identity over time --- only re-associated per frame.
+  \item \textbf{Output encoding.} Annotated video is written with the
+        \verb|mp4v| codec and no audio; container/codec compatibility is not
+        configurable.
+\end{itemize}
+
+\end{document}

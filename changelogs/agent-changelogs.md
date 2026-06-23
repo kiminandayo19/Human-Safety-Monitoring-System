@@ -36,3 +36,7 @@ Output: Created `app/utils/storage.py` with `save_detection_result(...)` (the fo
 [8] - 23, 06, 2026 13:11:01
 Prompt: Create a Person tracking module with a `track-person` endpoint: track persons (person model) + per-person PPE via ByteTrack, draw bbox with meta (person_id, helmet, vest, mask), add ID Switch Rate consistency, show FPS top-left, output an annotated video + JSON tracking file.
 Output: Added `app/schemas/tracking.py` (TrackedPerson/TrackingFrame/IDSwitchRate/TrackingData/PersonTrackingResult). Implemented `_IDSwitchTracker` and `track_persons()` (+ `_ppe_status_for_person`, `_track_persons_in_frame`) in `app/services/detector.py`: per-frame ByteTrack on both models, PPE-to-person association by box center, FPS overlay, annotated MP4 writing. Added `tracking_output_paths()`/`save_tracking_json()` to `app/utils/storage.py`. Created `app/api/v1/endpoints/track.py` (`POST /track-person`) and registered it in the router. Verified end-to-end via TestClient on sample clips (200 OK; person ids, meta, ID switch rate, FPS, video + JSON all produced).
+
+[9] - 23, 06, 2026 13:30:29
+Prompt: Generate a single .tex technical report covering data, model, evaluation, system design, AI usage log (primary, 3-5), and limitations.
+Output: Created `technical_report.tex` (self-contained LaTeX article) with the six requested sections, grounded in the repo (PPE/person models, class taxonomy, ByteTrack, ID Switch Rate, FPS, layered FastAPI design) and five primary changelog entries (#3,4,5,6,8). Verified it compiles cleanly with pdflatex to a PDF.
