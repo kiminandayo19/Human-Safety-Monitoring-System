@@ -111,6 +111,6 @@ written to `DETECTION_OUTPUT_DIR` (default `datas/detections/`):
 ## Docker
 
 ```bash
-docker build -t inaai .
-docker run -p 8000:8000 inaai
+docker build -t hsms .
+docker run -p 8000:8000 hsms
 ```
