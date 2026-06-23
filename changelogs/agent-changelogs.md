@@ -40,3 +40,7 @@ Output: Added `app/schemas/tracking.py` (TrackedPerson/TrackingFrame/IDSwitchRat
 [9] - 23, 06, 2026 13:30:29
 Prompt: Generate a single .tex technical report covering data, model, evaluation, system design, AI usage log (primary, 3-5), and limitations.
 Output: Created `technical_report.tex` (self-contained LaTeX article) with the six requested sections, grounded in the repo (PPE/person models, class taxonomy, ByteTrack, ID Switch Rate, FPS, layered FastAPI design) and five primary changelog entries (#3,4,5,6,8). Verified it compiles cleanly with pdflatex to a PDF.
+
+[10] - 23, 06, 2026 13:44:46
+Prompt: Adjust the README.md.
+Output: Rewrote `README.md` to reflect the current system (no longer a stub boilerplate): real two-model setup, updated project structure (detect.py, track.py, utils/storage.py, tracking schemas), a Models section with the PPE class taxonomy and config keys, the `/detect` and `/track-person` endpoints with curl examples, and an output-artifacts section.
