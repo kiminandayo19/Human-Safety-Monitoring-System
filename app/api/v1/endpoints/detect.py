@@ -1,29 +1,31 @@
-"""PPE detection endpoints — run the PPE model over uploaded frames."""
+"""Unified detection endpoint — run the PPE or person model over a frame."""
 
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.api.deps import get_detector
 from app.core.config import settings
-from app.schemas.detection import PersonDetectionResult
+from app.schemas.detection import DetectionType, PersonDetectionResult
 from app.services.detector import SafetyDetector
+from app.utils.storage import save_detection_result
 
-router = APIRouter(tags=["ppe"])
+router = APIRouter(tags=["detection"])
 
 
 @router.post(
-    "/detect-ppe",
+    "/detect",
     response_model=PersonDetectionResult,
     status_code=status.HTTP_200_OK,
 )
-async def detect_ppe(
+async def detect(
     file: UploadFile = File(..., description="Image/frame to analyze"),
+    detection_type: DetectionType = Form(
+        ..., description="Which model to run: ppe | person"),
     save_detection: bool = Form(default=False),
     detector: SafetyDetector = Depends(get_detector),
 ) -> PersonDetectionResult:
-    """Detect PPE compliance classes in a single uploaded image."""
+    """Detect PPE compliance or persons in a single uploaded image."""
     if not detector.is_ready():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -38,8 +40,11 @@ async def detect_ppe(
         )
 
     try:
-        boxes = detector.detect_ppe(
-            image_bytes, conf=settings.PERSON_DETECTION_THRESHOLD)
+        boxes = detector.detect(
+            detection_type,
+            image_bytes,
+            conf=settings.PERSON_DETECTION_THRESHOLD,
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -53,10 +58,7 @@ async def detect_ppe(
     )
 
     if save_detection:
-        output_dir = Path(settings.DETECTION_OUTPUT_DIR)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        extension = Path(file.filename or "").suffix.lstrip(".") or "jpg"
-        out_path = output_dir / f"ppe_detection_{result.detection_id}.{extension}"
-        out_path.write_bytes(image_bytes)
+        save_detection_result(
+            detector, detection_type, image_bytes, file.filename, result)
 
     return result
