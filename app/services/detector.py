@@ -15,12 +15,21 @@ API layer.
 """
 
 import time
+import uuid
 from typing import Any
+
+import cv2
+import numpy as np
 from ultralytics import YOLO
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.schemas.detection import DetectionResult
+from app.schemas.detection import (
+    BoundingBox,
+    Detection,
+    DetectionResult,
+    SafetyLabel,
+)
 
 logger = get_logger(__name__)
 
@@ -60,6 +69,47 @@ class SafetyDetector:
     def is_ready(self) -> bool:
         """Return True once both models are loaded and ready for inference."""
         return self._ppe_model is not None and self._person_model is not None
+
+    def detect_persons(
+        self, image_bytes: bytes, conf: float = 0.3
+    ) -> list[Detection]:
+        """Detect persons in a single image using the person model.
+
+        Args:
+            image_bytes: Raw image bytes (e.g. JPEG/PNG).
+            conf: Minimum confidence threshold for returned boxes.
+
+        Returns:
+            One :class:`Detection` per detected person.
+        """
+        if self._person_model is None:
+            raise RuntimeError(
+                "Person model is not loaded. Call load() first.")
+
+        buffer = np.frombuffer(image_bytes, dtype=np.uint8)
+        image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("Could not decode the uploaded image.")
+
+        # class 0 == "person" in the pretrained YOLOv11 model.
+        results = self._person_model(
+            image, classes=[0], conf=conf, verbose=False)
+
+        detections: list[Detection] = []
+        for result in results:
+            if result.boxes is None:
+                continue
+            for xyxy, confidence in zip(result.boxes.xyxy, result.boxes.conf):
+                x1, y1, x2, y2 = (float(v) for v in xyxy)
+                detections.append(
+                    Detection(
+                        id=str(uuid.uuid4()),
+                        label=SafetyLabel.PERSON,
+                        confidence=float(confidence),
+                        box=BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2),
+                    )
+                )
+        return detections
 
     def predict(self, image_bytes: bytes, frame_id: str | None = None) -> DetectionResult:
         """Run inference on a single image/frame.

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel, Field
+from typing import List
 
 
 class SafetyLabel(str, Enum):
@@ -29,6 +30,7 @@ class BoundingBox(BaseModel):
 class Detection(BaseModel):
     """A single detected object/event in a frame."""
 
+    id: str = Field(..., description="detection uuid")
     label: SafetyLabel
     confidence: float = Field(..., ge=0.0, le=1.0)
     box: BoundingBox
@@ -38,6 +40,15 @@ class DetectionResult(BaseModel):
     """Result of running the detector over a single frame/image."""
 
     frame_id: str | None = None
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc))
     detections: list[Detection] = Field(default_factory=list)
-    processing_ms: float = Field(..., description="Inference time in milliseconds")
+    processing_ms: float = Field(...,
+                                 description="Inference time in milliseconds")
+
+
+class PersonDetectionResult(BaseModel):
+    """Result of running the person detector over a single frame/image."""
+    detection_id: str = Field(..., description="detection result uuid")
+    input_name: str = Field(..., description="input filename")
+    boxes: List[Detection]

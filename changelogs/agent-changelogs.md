@@ -16,3 +16,7 @@ Output: Updated the Project Structure section in `CLAUDE.md` to reflect the new 
 [3] - 23, 06, 2026 11:27:11
 Prompt: Add model loader. The loader should be done when the service was booting. There will be 2 models: models/yolo_50.pt (PPE Detection) and models/yolo_person_tracker.pt (Raw Pretrained YOLOv11 for Person Detection and tracker).
 Output: Added `PPE_MODEL_PATH` and `PERSON_MODEL_PATH` settings to `app/core/config.py` (replacing the single `MODEL_PATH`). Reworked `app/services/detector.py` to load both YOLO models via ultralytics in `load()` (called on boot from the existing lifespan in `main.py`); `is_ready()` now requires both models. Verified both models load and the app imports cleanly.
+
+[4] - 23, 06, 2026 11:43:37
+Prompt: Create a new POST endpoint `detect-person` with form-data file upload and optional `save_detection` boolean, using the person_model with threshold 0.3, returning `PersonDetectionResult`.
+Output: Added `detect_persons()` to `app/services/detector.py` (decodes the image, runs the person model on class 0, returns `Detection` boxes). Created `app/api/v1/endpoints/persons.py` with the `POST /detect-person` endpoint and registered it in `app/api/v1/router.py`. Added `PERSON_DETECTION_THRESHOLD` (0.3) and `DETECTION_OUTPUT_DIR` settings to `app/core/config.py`; `save_detection=True` persists the result JSON there. Verified end-to-end via TestClient (200 OK, correct schema, file saved).
