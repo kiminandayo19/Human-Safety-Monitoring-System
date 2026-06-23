@@ -33,6 +33,17 @@ from app.schemas.detection import (
 
 logger = get_logger(__name__)
 
+# Maps PPE model class indices to safety labels — order matches CLASS_NAMES
+# in scripts/tracker.py.
+PPE_CLASS_LABELS: tuple[SafetyLabel, ...] = (
+    SafetyLabel.HARD_HAT,        # 0 - Hard Hat
+    SafetyLabel.NO_HARD_HAT,     # 1 - No Hard Hat
+    SafetyLabel.MASK,            # 2 - Mask
+    SafetyLabel.NO_MASK,         # 3 - No Mask
+    SafetyLabel.SAFETY_VEST,     # 4 - Safety Vest
+    SafetyLabel.NO_SAFETY_VEST,  # 5 - No Safety Vest
+)
+
 
 class SafetyDetector:
     """Wraps the computer-vision models used for human-safety detection."""
@@ -70,6 +81,15 @@ class SafetyDetector:
         """Return True once both models are loaded and ready for inference."""
         return self._ppe_model is not None and self._person_model is not None
 
+    @staticmethod
+    def _decode_image(image_bytes: bytes) -> "np.ndarray":
+        """Decode raw image bytes into a BGR numpy array."""
+        buffer = np.frombuffer(image_bytes, dtype=np.uint8)
+        image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("Could not decode the uploaded image.")
+        return image
+
     def detect_persons(
         self, image_bytes: bytes, conf: float = 0.3
     ) -> list[Detection]:
@@ -86,10 +106,7 @@ class SafetyDetector:
             raise RuntimeError(
                 "Person model is not loaded. Call load() first.")
 
-        buffer = np.frombuffer(image_bytes, dtype=np.uint8)
-        image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
-        if image is None:
-            raise ValueError("Could not decode the uploaded image.")
+        image = self._decode_image(image_bytes)
 
         # class 0 == "person" in the pretrained YOLOv11 model.
         results = self._person_model(
@@ -105,6 +122,50 @@ class SafetyDetector:
                     Detection(
                         id=str(uuid.uuid4()),
                         label=SafetyLabel.PERSON,
+                        confidence=float(confidence),
+                        box=BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2),
+                    )
+                )
+        return detections
+
+    def detect_ppe(
+        self, image_bytes: bytes, conf: float = 0.3
+    ) -> list[Detection]:
+        """Detect PPE compliance classes in a single image using the PPE model.
+
+        Args:
+            image_bytes: Raw image bytes (e.g. JPEG/PNG).
+            conf: Minimum confidence threshold for returned boxes.
+
+        Returns:
+            One :class:`Detection` per detected PPE item/violation.
+        """
+        if self._ppe_model is None:
+            raise RuntimeError(
+                "PPE model is not loaded. Call load() first.")
+
+        image = self._decode_image(image_bytes)
+
+        results = self._ppe_model(image, conf=conf, verbose=False)
+
+        detections: list[Detection] = []
+        for result in results:
+            if result.boxes is None:
+                continue
+            for xyxy, cls_idx, confidence in zip(
+                result.boxes.xyxy, result.boxes.cls, result.boxes.conf
+            ):
+                idx = int(cls_idx)
+                label = (
+                    PPE_CLASS_LABELS[idx]
+                    if 0 <= idx < len(PPE_CLASS_LABELS)
+                    else SafetyLabel.UNKNOWN
+                )
+                x1, y1, x2, y2 = (float(v) for v in xyxy)
+                detections.append(
+                    Detection(
+                        id=str(uuid.uuid4()),
+                        label=label,
                         confidence=float(confidence),
                         box=BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2),
                     )
