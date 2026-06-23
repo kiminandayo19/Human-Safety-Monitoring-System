@@ -34,7 +34,10 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = Field(default_factory=lambda: ["*"])
 
     # --- Computer Vision / Detection ---
-    MODEL_PATH: str = Field(default="models/safety_detector.pt")
+    # PPE detection model (helmet/vest/mask compliance).
+    PPE_MODEL_PATH: str = Field(default="models/yolo_50.pt")
+    # Person detection + tracking model (pretrained YOLOv11).
+    PERSON_MODEL_PATH: str = Field(default="models/yolo_person_tracker.pt")
     DETECTION_CONFIDENCE_THRESHOLD: float = Field(default=0.5, ge=0.0, le=1.0)
     DEVICE: str = Field(default="cpu")  # "cpu" or "cuda"
 
