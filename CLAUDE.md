@@ -60,6 +60,8 @@ app/
 └── services/
     ├── detector.py          # CV model wrapper (stub — replace me)
     └── safety_monitor.py    # Rules: detections -> events -> alerts
+├── utils/
+│   └── storage.py           # Persistence helpers (save detection artifacts)
 tests/                       # Pytest smoke tests
 changelogs/
 │   └── agent-changelogs.md  # ← AI agent must update this every session

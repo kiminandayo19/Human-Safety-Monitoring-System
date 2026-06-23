@@ -28,6 +28,7 @@ from app.schemas.detection import (
     BoundingBox,
     Detection,
     DetectionResult,
+    DetectionType,
     SafetyLabel,
 )
 
@@ -90,63 +91,34 @@ class SafetyDetector:
             raise ValueError("Could not decode the uploaded image.")
         return image
 
-    def detect_persons(
-        self, image_bytes: bytes, conf: float = 0.3
+    def detect(
+        self,
+        detection_type: DetectionType,
+        image_bytes: bytes,
+        conf: float = 0.3,
     ) -> list[Detection]:
-        """Detect persons in a single image using the person model.
+        """Run detection on a single image with the requested model.
 
         Args:
+            detection_type: Which model to run (``ppe`` or ``person``).
             image_bytes: Raw image bytes (e.g. JPEG/PNG).
             conf: Minimum confidence threshold for returned boxes.
 
         Returns:
-            One :class:`Detection` per detected person.
+            One :class:`Detection` per detected object/violation.
         """
-        if self._person_model is None:
+        if not self.is_ready():
             raise RuntimeError(
-                "Person model is not loaded. Call load() first.")
+                "Detector models are not loaded. Call load() first.")
 
         image = self._decode_image(image_bytes)
 
-        # class 0 == "person" in the pretrained YOLOv11 model.
-        results = self._person_model(
-            image, classes=[0], conf=conf, verbose=False)
-
-        detections: list[Detection] = []
-        for result in results:
-            if result.boxes is None:
-                continue
-            for xyxy, confidence in zip(result.boxes.xyxy, result.boxes.conf):
-                x1, y1, x2, y2 = (float(v) for v in xyxy)
-                detections.append(
-                    Detection(
-                        id=str(uuid.uuid4()),
-                        label=SafetyLabel.PERSON,
-                        confidence=float(confidence),
-                        box=BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2),
-                    )
-                )
-        return detections
-
-    def detect_ppe(
-        self, image_bytes: bytes, conf: float = 0.3
-    ) -> list[Detection]:
-        """Detect PPE compliance classes in a single image using the PPE model.
-
-        Args:
-            image_bytes: Raw image bytes (e.g. JPEG/PNG).
-            conf: Minimum confidence threshold for returned boxes.
-
-        Returns:
-            One :class:`Detection` per detected PPE item/violation.
-        """
-        if self._ppe_model is None:
-            raise RuntimeError(
-                "PPE model is not loaded. Call load() first.")
-
-        image = self._decode_image(image_bytes)
-
-        results = self._ppe_model(image, conf=conf, verbose=False)
+        if detection_type is DetectionType.PERSON:
+            # class 0 == "person" in the pretrained YOLOv11 model.
+            results = self._person_model(
+                image, classes=[0], conf=conf, verbose=False)
+        else:
+            results = self._ppe_model(image, conf=conf, verbose=False)
 
         detections: list[Detection] = []
         for result in results:
@@ -155,22 +127,68 @@ class SafetyDetector:
             for xyxy, cls_idx, confidence in zip(
                 result.boxes.xyxy, result.boxes.cls, result.boxes.conf
             ):
-                idx = int(cls_idx)
-                label = (
-                    PPE_CLASS_LABELS[idx]
-                    if 0 <= idx < len(PPE_CLASS_LABELS)
-                    else SafetyLabel.UNKNOWN
-                )
-                x1, y1, x2, y2 = (float(v) for v in xyxy)
                 detections.append(
                     Detection(
                         id=str(uuid.uuid4()),
-                        label=label,
+                        label=self._label_for(detection_type, int(cls_idx)),
                         confidence=float(confidence),
-                        box=BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2),
+                        box=BoundingBox(
+                            x1=float(xyxy[0]),
+                            y1=float(xyxy[1]),
+                            x2=float(xyxy[2]),
+                            y2=float(xyxy[3]),
+                        ),
                     )
                 )
         return detections
+
+    @staticmethod
+    def _label_for(detection_type: DetectionType, cls_idx: int) -> SafetyLabel:
+        """Resolve a model class index to a :class:`SafetyLabel`."""
+        if detection_type is DetectionType.PERSON:
+            return SafetyLabel.PERSON
+        if 0 <= cls_idx < len(PPE_CLASS_LABELS):
+            return PPE_CLASS_LABELS[cls_idx]
+        return SafetyLabel.UNKNOWN
+
+    def annotate(
+        self,
+        image_bytes: bytes,
+        detections: list[Detection],
+        extension: str = "jpg",
+    ) -> bytes:
+        """Draw detection boxes/labels onto the image and re-encode it.
+
+        Args:
+            image_bytes: The original image bytes.
+            detections: Boxes to overlay.
+            extension: Output image extension (e.g. ``jpg``, ``png``).
+
+        Returns:
+            The annotated image encoded as bytes.
+        """
+        image = self._decode_image(image_bytes)
+
+        for det in detections:
+            x1, y1 = int(det.box.x1), int(det.box.y1)
+            x2, y2 = int(det.box.x2), int(det.box.y2)
+            # Violations (the "no_*" classes) are drawn red, otherwise green.
+            is_violation = det.label.value.startswith("no_")
+            color = (0, 0, 255) if is_violation else (0, 255, 0)
+            label = f"{det.label.value} {det.confidence:.2f}"
+
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(image, label, (x1, max(y1 - 8, 0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+        ext = extension if extension.startswith(".") else f".{extension}"
+        ok, buffer = cv2.imencode(ext, image)
+        if not ok:
+            # Fall back to JPEG for extensions OpenCV cannot encode.
+            ok, buffer = cv2.imencode(".jpg", image)
+            if not ok:
+                raise ValueError("Could not encode the annotated image.")
+        return buffer.tobytes()
 
     def predict(self, image_bytes: bytes, frame_id: str | None = None) -> DetectionResult:
         """Run inference on a single image/frame.

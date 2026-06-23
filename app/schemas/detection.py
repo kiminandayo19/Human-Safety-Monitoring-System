@@ -7,6 +7,13 @@ from pydantic import BaseModel, Field
 from typing import List
 
 
+class DetectionType(str, Enum):
+    """Which detection model to run for a request."""
+
+    PPE = "ppe"
+    PERSON = "person"
+
+
 class SafetyLabel(str, Enum):
     """Classes the safety detector can emit."""
 
