@@ -10,9 +10,15 @@ from typing import List
 class SafetyLabel(str, Enum):
     """Classes the safety detector can emit."""
 
+    # PPE detection classes — match CLASS_NAMES in scripts/tracker.py.
+    HARD_HAT = "hard_hat"
+    NO_HARD_HAT = "no_hard_hat"
+    MASK = "mask"
+    NO_MASK = "no_mask"
+    SAFETY_VEST = "safety_vest"
+    NO_SAFETY_VEST = "no_safety_vest"
+
     PERSON = "person"
-    NO_HELMET = "no_helmet"
-    NO_VEST = "no_vest"
     FALL = "fall"
     RESTRICTED_ZONE = "restricted_zone_intrusion"
     UNKNOWN = "unknown"

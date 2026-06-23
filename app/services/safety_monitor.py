@@ -13,7 +13,11 @@ from app.schemas.monitoring import Alert, SafetyEvent, Severity
 
 # Detection labels that should always be treated as critical safety events.
 _CRITICAL_LABELS = {SafetyLabel.FALL, SafetyLabel.RESTRICTED_ZONE}
-_WARNING_LABELS = {SafetyLabel.NO_HELMET, SafetyLabel.NO_VEST}
+_WARNING_LABELS = {
+    SafetyLabel.NO_HARD_HAT,
+    SafetyLabel.NO_MASK,
+    SafetyLabel.NO_SAFETY_VEST,
+}
 
 
 def _severity_for(label: SafetyLabel) -> Severity:
