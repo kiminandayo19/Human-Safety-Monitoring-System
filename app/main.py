@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
+from app.core.model_download import download_model
 from app.services.detector import detector
 
 logger = get_logger(__name__)
@@ -17,6 +18,7 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle — loads the detection model on boot."""
     configure_logging()
+    download_model()
     logger.info("Starting %s v%s", settings.APP_NAME, settings.APP_VERSION)
     detector.load()
     yield

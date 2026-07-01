@@ -13,6 +13,7 @@ dependencies = [
     "ultralytics>=8.4.75",
     "roboflow>=1.3.10",
     "python-dotenv>=1.2.2",
+    "huggingface-hub>=1.21.0",
 ]
 
 [project.optional-dependencies]
